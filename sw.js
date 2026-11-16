@@ -2,7 +2,7 @@
    URLs are relative to this file so the worker works at /tap-transcribe/. */
 'use strict';
 
-var CACHE = 'tap-transcribe-v2';
+var CACHE = 'tap-transcribe-v3';
 var ASSETS = [
   './index.html',
   './styles.css',

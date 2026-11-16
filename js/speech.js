@@ -1,22 +1,27 @@
 /* Live speech on iOS Safari.
 
-   webkitSpeechRecognition is the only on-device transcriber we can use
-   from a static page. It is unreliable in three ways this controller
-   is built around:
+   webkitSpeechRecognition is the only transcriber a static page can use,
+   and iOS does not keep a session open through silence:
 
-   1. It loses the microphone if MediaRecorder or getUserMedia holds it.
-      The app keeps audio off on iPhone unless you opt in, and if the
-      recognizer reports audio-capture we drop the recorder and keep
-      listening. Transcript wins.
-   2. iOS ends a session on a pause and again after roughly a minute,
-      often with no error. Sometimes it never fires onend at all.
-      Each session is a new recognizer. onend starts another. A watchdog
-      recycles a session that has gone quiet.
-   3. start() has to run inside the tap. Callers must not await anything
-      before start().
+   - A few seconds with no words fires `no-speech`, then `onend`.
+   - After words, a pause fires `onend`, often with no error.
+   - `aborted` means this session was cancelled or a restart collided.
+     It is not a reason to give up.
+   - Around a minute the session ends again. Sometimes `onend` never
+     comes, so a watchdog starts a fresh recognizer.
+   - `start()` has to run inside the original tap. Calling it on the
+     same instance, or synchronously inside `onend`, is ignored or
+     comes straight back as `aborted`. Each restart is a new instance
+     on a 100ms timer. That is as immediate as iOS will accept.
+
+   Silence used to count as a failure after a few quick endings, which
+   is what made listening stop while the user was still quiet. Silence,
+   `no-speech`, and `aborted` now restart immediately and the screen
+   stays on Listening. Only a missing API gives up. Network, permission,
+   and other hard errors wait longer between tries and keep going.
 
    Final phrases are kept across those restarts. A repeated tail is
-   dropped so iOS doesn't print the last line twice. */
+   dropped so iOS does not print the last line twice. */
 
 import { appendPiece, joinText } from './text.js';
 
@@ -33,17 +38,18 @@ export function createSpeech(options) {
   var recognizer = null;
   var restartTimer = 0;
   var capTimer = 0;
+  var backupTimer = 0;
   var watchTimer = 0;
   var generation = 0;
   var lastEvent = 0;
   var lastHearing = 0;
   var born = 0;
-  var fastFails = 0;
+  var hardRetries = 0;
   var networkFails = 0;
   var triedEn = false;
   var forceLang = '';
-  var noSpeech = false;
   var heard = false;
+  var told = '';
   var committed = '';
   var sessionFinal = '';
   var interim = '';
@@ -78,6 +84,17 @@ export function createSpeech(options) {
   function clearRunTimers() {
     window.clearTimeout(restartTimer);
     window.clearTimeout(capTimer);
+    window.clearTimeout(backupTimer);
+  }
+
+  function delayFor(kind) {
+    if (kind === 'soft') {
+      hardRetries = 0;
+      return 100;
+    }
+    hardRetries += 1;
+    var step = Math.min(hardRetries, 5);
+    return Math.min(8000, 400 * Math.pow(2, step - 1));
   }
 
   function scheduleRestart(delay) {
@@ -87,6 +104,20 @@ export function createSpeech(options) {
       if (!want || fatal || gen !== generation) return;
       spin();
     }, delay);
+  }
+
+  /* iOS sometimes emits no-speech or aborted and never follows with onend.
+     The backup starts the next session if that happens. onend cancels it. */
+  function armEndBackup(r, kind) {
+    var gen = generation;
+    window.clearTimeout(backupTimer);
+    backupTimer = window.setTimeout(function () {
+      if (!want || fatal || gen !== generation || recognizer !== r) return;
+      fold();
+      emit();
+      retire(r);
+      scheduleRestart(delayFor(kind));
+    }, kind === 'soft' ? 250 : 500);
   }
 
   function detach(r) {
@@ -100,38 +131,49 @@ export function createSpeech(options) {
     r.onsoundend = null;
   }
 
+  function retire(r) {
+    if (!r) return;
+    if (recognizer === r) recognizer = null;
+    detach(r);
+    try { r.abort(); } catch (err) { /* already stopped */ }
+  }
+
   function recycle() {
     var current = recognizer;
-    recognizer = null;
-    window.clearTimeout(capTimer);
-    if (current) {
-      detach(current);
-      try { current.abort(); } catch (err) { /* already stopped */ }
-    }
     fold();
     emit();
-    scheduleRestart(220);
+    retire(current);
+    scheduleRestart(100);
   }
 
   function watchdog() {
-    if (!want || fatal) return;
-    var idleFor = Date.now() - lastEvent;
-    var quietFor = Date.now() - (lastHearing || born || lastEvent);
-    if (quietFor > 3200) onHear('silent');
-    var stall = aggressive ? 9000 : 20000;
-    if (lastEvent && idleFor > stall) {
+    if (!want || fatal || !lastEvent) return;
+    var stall = aggressive ? 8000 : 12000;
+    if (Date.now() - lastEvent > stall) {
       lastEvent = Date.now();
       recycle();
     }
   }
 
+  function report(reason) {
+    if (told === reason) return;
+    told = reason;
+    if (reason === 'network') onNotice(reason);
+    else onFatal(reason);
+  }
+
   function spin() {
     if (!want || fatal) return;
+    if (recognizer) {
+      fold();
+      emit();
+      retire(recognizer);
+    }
     var Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Ctor) {
       fatal = true;
       want = false;
-      onFatal('missing');
+      report('missing');
       return;
     }
     var r = new Ctor();
@@ -144,17 +186,25 @@ export function createSpeech(options) {
     } catch (err) { /* lang is optional */ }
     try { r.maxAlternatives = 1; } catch (err2) { /* Safari */ }
     born = Date.now();
-    noSpeech = false;
 
     r.onstart = function () {
       if (recognizer !== r) return;
       touch('listening');
       onHear(lastHearing && Date.now() - lastHearing < 2500 ? 'hearing' : 'listening');
       window.clearTimeout(capTimer);
+      window.clearTimeout(backupTimer);
       capTimer = window.setTimeout(function () {
-        if (recognizer !== r || !want) return;
-        try { r.stop(); } catch (err) { scheduleRestart(200); }
-      }, aggressive ? 40000 : 120000);
+        if (recognizer !== r || !want || fatal) return;
+        try { r.stop(); } catch (err) { /* onend may not follow */ }
+        var gen = generation;
+        backupTimer = window.setTimeout(function () {
+          if (!want || fatal || gen !== generation || recognizer !== r) return;
+          fold();
+          emit();
+          retire(r);
+          scheduleRestart(100);
+        }, 500);
+      }, aggressive ? 45000 : 55000);
     };
     r.onspeechstart = function () { if (recognizer === r) touch('hearing'); };
     r.onsoundstart = function () { if (recognizer === r) touch('hearing'); };
@@ -175,71 +225,58 @@ export function createSpeech(options) {
       interim = mid;
       if ((fin && fin.trim()) || (mid && mid.trim())) touch('hearing');
       networkFails = 0;
-      fastFails = 0;
+      hardRetries = 0;
       emit();
     };
     r.onerror = function (event) {
       if (recognizer !== r) return;
       var code = event && event.error ? event.error : '';
       touch('listening');
-      if (code === 'aborted') return;
-      if (code === 'no-speech') {
-        noSpeech = true;
-        onHear('silent');
+      if (code === 'aborted' || code === 'no-speech') {
+        armEndBackup(r, 'soft');
         return;
       }
       if (code === 'audio-capture') {
         onConflict();
+        armEndBackup(r, 'soft');
         return;
       }
       if (code === 'language-not-supported' && !triedEn) {
         triedEn = true;
         forceLang = 'en-US';
+        armEndBackup(r, 'soft');
         return;
       }
       if (code === 'network') {
         networkFails += 1;
-        if (networkFails >= 2) onNotice('network');
+        if (networkFails >= 2) report('network');
+        armEndBackup(r, 'hard');
         return;
       }
       if (code === 'not-allowed') {
-        if (heard) return;
-        fatal = true;
-        want = false;
-        onFatal('not-allowed');
+        if (!heard) report('not-allowed');
+        armEndBackup(r, 'hard');
         return;
       }
       if (code === 'service-not-allowed') {
-        fatal = true;
-        want = false;
-        onFatal('service-not-allowed');
+        report('service-not-allowed');
+        armEndBackup(r, 'hard');
         return;
       }
-      fatal = true;
-      want = false;
-      onFatal('unavailable');
+      report('retry');
+      armEndBackup(r, 'hard');
     };
     r.onend = function () {
       if (recognizer !== r) return;
-      var lived = Date.now() - born;
       recognizer = null;
       window.clearTimeout(capTimer);
+      window.clearTimeout(backupTimer);
       fold();
       emit();
       if (!want || fatal) return;
-      if (!noSpeech && lived < 500 && !heard) {
-        fastFails += 1;
-        if (fastFails >= 4) {
-          fatal = true;
-          want = false;
-          onFatal('unavailable');
-          return;
-        }
-      } else if (lived >= 500) {
-        fastFails = 0;
-      }
-      noSpeech = false;
-      scheduleRestart(networkFails >= 2 ? 1500 : 260);
+      var kind = 'soft';
+      if (networkFails >= 2 || (told && told !== 'network' && !heard)) kind = 'hard';
+      scheduleRestart(delayFor(kind));
     };
 
     try {
@@ -248,14 +285,8 @@ export function createSpeech(options) {
       lastEvent = Date.now();
     } catch (err) {
       if (recognizer === r) recognizer = null;
-      fastFails += 1;
-      if (fastFails >= 4) {
-        fatal = true;
-        want = false;
-        onFatal('unavailable');
-        return;
-      }
-      scheduleRestart(300);
+      retire(r);
+      scheduleRestart(delayFor('hard'));
     }
   }
 
@@ -263,11 +294,12 @@ export function createSpeech(options) {
     generation += 1;
     want = true;
     fatal = false;
-    fastFails = 0;
+    hardRetries = 0;
     networkFails = 0;
     triedEn = false;
     forceLang = '';
     heard = false;
+    told = '';
     lastHearing = 0;
     committed = '';
     sessionFinal = '';

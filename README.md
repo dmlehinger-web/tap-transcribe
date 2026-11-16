@@ -31,7 +31,7 @@ What this app does instead:
 
 - Speech recognition starts in the same tap, before any microphone request. iOS forgets the tap if `start()` runs later and returns `not-allowed`.
 - If recognition is missing or blocked, the take is still saved and the screen says so. From the Home Screen, **Open in Safari** leaves the installed app. The link uses `target="_blank"`, which is what makes iOS switch out of standalone.
-- iOS ends recognition on a pause and about once a minute. Each ending starts a new recognizer. A repeated last phrase is dropped. If a session goes quiet with no events, it is recycled.
+- iOS ends recognition on silence, on a pause, and about once a minute. Each ending starts a new recognizer until you tap Stop or leave the page. The screen stays on Listening. A repeated last phrase is dropped.
 - If you turn audio on and the recognizer reports that the microphone is busy, audio is switched off and listening continues.
 - Playing a saved clip can leave the next recognition hung ([bug 321436](https://bugs.webkit.org/show_bug.cgi?id=321436)). Each new tap pauses playback and builds a new recognizer.
 

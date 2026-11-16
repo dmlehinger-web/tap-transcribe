@@ -86,7 +86,6 @@ var speech = createSpeech({
   },
   onFatal: function (reason) {
     speechFailed = true;
-    hear = 'silent';
     explainSpeech(reason);
     renderChrome();
   },
@@ -172,7 +171,7 @@ function explainSpeech(reason) {
     }
     return;
   }
-  if (reason === 'network') {
+  if (reason === 'network' || reason === 'retry') {
     setBanner('info', 'Live transcription needs a network connection. Still listening.');
     return;
   }
@@ -190,15 +189,14 @@ function renderChrome() {
   tapLabel.textContent = phase === 'stopping' ? 'Saving' : live ? 'Stop' : 'Tap';
   var label = 'Ready';
   if (phase === 'stopping') label = 'Saving';
-  else if (live && hear === 'silent') label = 'Not hearing anything';
   else if (live) label = 'Listening';
   statusText.textContent = label;
-  hearChip.classList.toggle('is-silent', live && hear === 'silent');
-  hearChip.classList.toggle('is-live', live && hear !== 'silent');
+  hearChip.classList.toggle('is-silent', false);
+  hearChip.classList.toggle('is-live', live);
   if (!live) timerEl.textContent = '00:00';
   document.title = live ? 'Listening · Tap Transcribe' : 'Tap Transcribe';
   var theme = document.querySelector('meta[name="theme-color"]');
-  if (theme) theme.setAttribute('content', live && hear === 'silent' ? '#1c1708' : live ? '#160806' : '#0b0b0d');
+  if (theme) theme.setAttribute('content', live ? '#160806' : '#0b0b0d');
   var on = readAudioPref() && !audioBlocked;
   audioToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
   audioToggle.textContent = on ? 'Saving audio' : (isIOS() ? 'Audio off — keeps live text reliable' : 'Audio off');
@@ -213,11 +211,7 @@ function renderLive(finalText, interimText) {
   placeholder.hidden = !empty;
   liveText.hidden = empty;
   if (empty) {
-    placeholder.textContent = phase === 'recording' && hear === 'silent'
-      ? 'Not hearing anything yet. Move closer, or check Dictation is on.'
-      : phase === 'recording'
-        ? 'Listening…'
-        : 'Your words show up here.';
+    placeholder.textContent = phase === 'recording' ? 'Listening…' : 'Your words show up here.';
   }
   if (finalText && announcer.textContent !== finalText && (phase === 'recording' || phase === 'stopping')) {
     announcer.textContent = finalText;
@@ -455,20 +449,36 @@ function requestFinish() {
   return finishPromise;
 }
 
+var wakePending = false;
+
 function acquireWake() {
+  if (phase !== 'recording' && phase !== 'starting') return;
   if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+  if (wakeSentinel || wakePending) return;
+  wakePending = true;
   navigator.wakeLock.request('screen').then(function (sentinel) {
-    if (phase !== 'recording') {
+    wakePending = false;
+    if (phase !== 'recording' && phase !== 'starting') {
       sentinel.release().catch(function () {});
       return;
     }
     wakeSentinel = sentinel;
-  }).catch(function () { wakeSentinel = null; });
+    if (sentinel.addEventListener) {
+      sentinel.addEventListener('release', function () {
+        if (wakeSentinel === sentinel) wakeSentinel = null;
+        if (phase === 'recording' || phase === 'starting') acquireWake();
+      });
+    }
+  }).catch(function () {
+    wakePending = false;
+    wakeSentinel = null;
+  });
 }
 
 function releaseWake() {
   var sentinel = wakeSentinel;
   wakeSentinel = null;
+  wakePending = false;
   if (!sentinel) return;
   sentinel.release().catch(function () {});
 }
@@ -1056,6 +1066,7 @@ window.setInterval(function () {
   if (ceremony || lockBusy) return;
   if (phase === 'recording' || phase === 'starting' || phase === 'stopping') {
     lastInput = Date.now();
+    if (phase !== 'stopping' && !wakeSentinel) acquireWake();
     return;
   }
   if (Date.now() - lastInput > 60000) lockNow();
