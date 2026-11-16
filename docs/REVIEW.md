@@ -4,7 +4,7 @@ Checked while fixing missed speech, lost saves, and the lock. Static files only.
 
 ## What changed
 
-- **Speech.** iPhone no longer opens the microphone for `MediaRecorder` in the same take as `webkitSpeechRecognition`. That pairing was the miss: the recognizer reports `audio-capture` (microphone busy) and, on current iOS, a capture track is muted within a second or two of recognition starting ([WebKit 321436](https://bugs.webkit.org/show_bug.cgi?id=321436)). Audio is off by default on iPhone. If it is on and recognition reports the conflict, the recorder is dropped and listening continues. Each session is a new recognizer. It restarts on end, recycles if iOS goes quiet, and stops itself around 40 seconds so iOS does not have to.
+- **Speech.** iPhone no longer opens the microphone for `MediaRecorder` in the same take as `webkitSpeechRecognition`. That pairing was the miss: the recognizer reports `audio-capture` (microphone busy) and, on current iOS, a capture track is muted within a second or two of recognition starting ([WebKit 321436](https://bugs.webkit.org/show_bug.cgi?id=321436)). Audio is off by default on iPhone. If it is on and recognition reports the conflict, the recorder is dropped and listening continues. iOS ends a session on silence (`no-speech` then `onend`), on a pause, and about once a minute, and sometimes never fires `onend`. Each ending starts a new recognizer about 100ms later. Silence and `aborted` are not failures. The status stays on Listening until Stop. Hard errors wait longer between tries and keep going. Only a missing API stops the loop.
 - **Saves.** A draft is written as words arrive, including the latest interim line. Stop always writes a row, even with no audio and even when recognition never started. Hiding the page, leaving it, or a call finishes the take before the screen locks. A draft left behind by a killed page is kept on the next unlock. Older plaintext rows from the first version are encrypted on that unlock and not shown before then.
 - **Lock.** A 6-digit PIN wraps an AES-GCM key with PBKDF2-SHA-256, 200,000 iterations. Face ID is a platform passkey. The key is wrapped with the passkey’s PRF secret only when the browser actually returns one. The raw key is held in memory and cleared on lock, after a minute idle, and when the page is hidden. A Face ID sheet does not count as leaving. Wrong PINs pause after five tries.
 
@@ -38,16 +38,16 @@ Access still would not encrypt the notes. The in-app lock stays either way. `git
 ## Reliability
 
 - `start()` runs inside the tap, before any `await`.
-- iOS ends recognition on a pause and about once a minute, and sometimes never fires `onend`. The watchdog recycles a quiet session. `no-speech` is shown as “Not hearing anything” and does not abort the take.
+- iOS ends recognition on silence, on a pause, and about once a minute, and sometimes never fires `onend`. Those endings start a new recognizer. The screen stays on Listening the whole time. Idle lock does not run during a take. The screen wake lock is requested again if the phone releases it.
 - Home Screen web apps may still lack the API ([bug 225298](https://bugs.webkit.org/show_bug.cgi?id=225298)). The take is saved and the screen links out to Safari.
 - Wake Lock is requested only while listening, and again if you come back.
 - `navigator.storage.persist()` is requested after unlock. If the phone is out of room, the words are kept and the audio is skipped.
-- The service worker is `tap-transcribe-v2`, network-first, so a phone on the old shell picks this up. It reloads on an update only when a take is not in progress.
+- The service worker is `tap-transcribe-v3`, network-first, so a phone on the old shell picks this up. It reloads on an update only when a take is not in progress.
 
 ## Usability and accessibility
 
 - One tap starts. The label under the button says Tap, Stop, or Saving. Stop is not painted in white on the red disc.
-- “Listening” and “Not hearing anything” are a live status, in sentence case, with a red or amber control.
+- While a take is open the status stays “Listening”, including through silence, so the control does not flicker to a stopped state.
 - Targets used for PIN, Lock, Copy, Share, and Delete are at least 44px. The record control is larger.
 - Text meets 4.5:1 against `#0b0b0d` (`#f5f5f7` body, `#9b9ba4` secondary). The stop icon is white on `#ff3b30` (about 3.5:1, above the 3:1 non-text bar).
 - PIN dots announce “N of 6 digits” and never the PIN. Alerts use `role="alert"` or `aria-live`.
@@ -59,6 +59,6 @@ The shell, styles, scripts, manifest, and icons are precached. Recognition canno
 
 ## Tests
 
-`npm test` runs the text helpers and Playwright. Chromium is launched with a fake microphone and an iPhone 13 viewport and user agent, plus a separate WebKit project using the same device profile. Playwright’s WebKit is not iOS Safari. A fake `webkitSpeechRecognition` covers restarts, silence, a blocked recognizer, a thrown recorder, a busy microphone, reload, hiding the page, the PIN, and ciphertext at rest.
+`npm test` runs the text helpers and Playwright. Chromium is launched with a fake microphone and an iPhone 13 viewport and user agent, plus a separate WebKit project using the same device profile. Playwright’s WebKit is not iOS Safari. A fake `webkitSpeechRecognition` covers restarts, a few minutes of silence on a fake clock (repeated `no-speech`, `aborted`, and `onend`, with words still accumulating), a blocked recognizer, a thrown recorder, a busy microphone, reload, hiding the page, the PIN, and ciphertext at rest.
 
 A real iPhone still has to confirm: Dictation permission, Home Screen recognition, the actual microphone fight, Face ID PRF, the silent-switch and a phone call, storage eviction, and the installed icon.

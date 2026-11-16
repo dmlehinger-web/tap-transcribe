@@ -8,6 +8,33 @@ async function arm(page, mode) {
     window.__gum = 0;
     window.__speech = { starts: 0 };
     window.__xss = 0;
+    window.__wakes = 0;
+    if (mode === 'minutes') {
+      var wakeMock = {
+        request: function () {
+          window.__wakes += 1;
+          var listeners = [];
+          var sentinel = {
+            release: function () { return Promise.resolve(); },
+            addEventListener: function (type, fn) { if (type === 'release') listeners.push(fn); }
+          };
+          if (window.__wakes === 1) {
+            window.setTimeout(function () {
+              listeners.forEach(function (fn) { fn(); });
+            }, 30000);
+          }
+          return Promise.resolve(sentinel);
+        }
+      };
+      try {
+        Object.defineProperty(Navigator.prototype, 'wakeLock', {
+          configurable: true,
+          get: function () { return wakeMock; }
+        });
+      } catch (err) {
+        window.__wakeMockFailed = String(err);
+      }
+    }
     var devices = navigator.mediaDevices;
     var real = devices && devices.getUserMedia ? devices.getUserMedia.bind(devices) : null;
     if (devices) {
@@ -40,6 +67,26 @@ async function arm(page, mode) {
       var n = window.__speech.starts;
       var self = this;
       var modeNow = window.__speechMode;
+      if (modeNow === 'minutes') {
+        window.setTimeout(function () {
+          if (typeof self.onstart === 'function') self.onstart();
+          var slot = n % 5;
+          if (slot === 0) {
+            deliver(self, ['word ' + n]);
+            if (self.onend) self.onend();
+          } else if (slot === 1 && n > 1) {
+            deliver(self, ['word ' + (n - 1)]);
+            if (self.onend) self.onend();
+          } else if (slot === 2) {
+            if (self.onerror) self.onerror({ error: 'aborted' });
+            if (self.onend) self.onend();
+          } else {
+            if (self.onerror) self.onerror({ error: 'no-speech' });
+            if (self.onend) self.onend();
+          }
+        }, 5000);
+        return;
+      }
       window.setTimeout(function () {
         if (typeof self.onstart === 'function') self.onstart();
         if (modeNow === 'hold') return;
@@ -230,18 +277,72 @@ test('a longer take keeps every line', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test('shows not hearing anything and still saves the take', async ({ page }) => {
+test('silence restarts recognition and the screen stays on Listening', async ({ page }) => {
   var errors = watchErrors(page);
   await arm(page, 'silent');
   await page.goto(PAGE);
   await unlockFresh(page);
   await page.locator('#tap').click();
-  await expect(page.locator('#status-text')).toHaveText('Not hearing anything');
+  await expect(page.locator('#status-text')).toHaveText('Listening');
   await expect.poll(function () {
     return page.evaluate(function () { return window.__speech.starts; });
   }).toBeGreaterThan(1);
+  await expect(page.locator('#status-text')).toHaveText('Listening');
   await page.locator('#tap').click();
   await expect(page.locator('.preview')).toContainText('Nothing was captured');
+  expect(errors).toEqual([]);
+});
+
+test('keeps listening through minutes of silence and keeps the words', async ({ page }) => {
+  var errors = watchErrors(page);
+  await page.clock.install();
+  await arm(page, 'minutes');
+  await page.goto(PAGE);
+  await unlockFresh(page);
+  await page.locator('#tap').click();
+  await expect(page.locator('#status-text')).toHaveText('Listening');
+  await page.evaluate(function () {
+    window.__labels = [];
+    window.__hears = [];
+    var status = document.getElementById('status-text');
+    window.__labels.push(status.textContent);
+    new MutationObserver(function () {
+      window.__labels.push(status.textContent);
+    }).observe(status, { childList: true, characterData: true, subtree: true });
+    window.__hears.push(document.body.dataset.hear);
+    new MutationObserver(function () {
+      window.__hears.push(document.body.dataset.hear);
+    }).observe(document.body, { attributes: true, attributeFilter: ['data-hear'] });
+  });
+  await page.clock.runFor(180000);
+  var info = await page.evaluate(function () {
+    return {
+      starts: window.__speech.starts,
+      labels: window.__labels,
+      hears: window.__hears,
+      text: document.getElementById('live-final').textContent,
+      wakes: window.__wakes,
+      timer: document.getElementById('timer').textContent,
+      pressed: document.getElementById('tap').getAttribute('aria-pressed')
+    };
+  });
+  expect(info.pressed).toBe('true');
+  expect(info.starts).toBeGreaterThan(25);
+  expect(info.labels.every(function (label) { return label === 'Listening'; })).toBe(true);
+  expect(info.hears.indexOf('silent')).toBe(-1);
+  expect(info.text).toContain('word 5');
+  expect(info.text).toContain('word 30');
+  expect((info.text.match(/word 5/g) || []).length).toBe(1);
+  expect(info.wakes).toBeGreaterThan(1);
+  expect(info.timer).not.toBe('00:00');
+  await expect(page.getByRole('heading', { name: 'Locked' })).toBeHidden();
+  await page.clock.resume();
+  await expect(page.locator('#save-state')).toHaveText('Saved on this phone');
+  await page.locator('#tap').click();
+  await expect(page.locator('.session')).toHaveCount(1);
+  await expect(page.locator('.preview')).toContainText('word 5');
+  await expect(page.locator('.preview')).toContainText('word 30');
+  expect((await page.locator('.preview').innerText()).match(/word 5/g).length).toBe(1);
   expect(errors).toEqual([]);
 });
 
