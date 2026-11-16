@@ -1,6 +1,6 @@
 # Tap Transcribe
 
-One tap starts the iPhone microphone and a live transcript. Tap again to stop. Each take keeps the audio and the words on the phone.
+One tap listens and writes a live transcript on your iPhone. Tap again to stop. Notes stay on that phone, locked with a PIN.
 
 **Live:** https://dmlehinger-web.github.io/tap-transcribe/
 
@@ -12,25 +12,29 @@ One tap starts the iPhone microphone and a live transcript. Tap again to stop. E
 
 Dictation has to be on for live text: Settings → General → Keyboard → Enable Dictation.
 
+The first launch asks for a 6-digit PIN. That PIN encrypts saved notes on this phone. Face ID is offered when the phone can store the key in a passkey. The screen locks again after a minute, and when you leave the app.
+
 ## What you get
 
-- One button. It records and transcribes together, then stops.
-- Live speech-to-text that starts again when iOS ends a recognition session, so a long take keeps going.
-- Audio saved with the transcript (`audio/mp4` on iPhone). Play it, copy the text, share it, or delete it.
-- Sessions stored on the device. The screen stays awake while you record, when the phone allows it.
-- An installable app. After the first visit, the shell still opens with no network.
+- One button. Tap to listen, tap to stop.
+- Live speech-to-text that starts again when iOS ends a recognition session.
+- On iPhone, audio recording stays off unless you turn it on. Recording and transcription share one microphone, and on current iOS the recording wins and the transcript goes silent. The words are the point.
+- Notes are written while you talk, not only when you stop. A take with no audio is still saved. Leaving the app or an incoming call finishes the take and locks it.
+- Sessions stay in this browser, encrypted. Play audio when you have it, copy the text, share it, or delete it.
+- An installable app. After the first visit, the shell still opens with no network. Transcription itself needs Apple’s speech service, which needs a connection.
 
 ## iPhone: Safari and the Home Screen
 
-Live text uses the browser speech API (`webkitSpeechRecognition`). It works in iOS Safari when Dictation is enabled. WebKit has said the same API is not available in Home Screen web apps or Safari View Controller ([bug 225298](https://bugs.webkit.org/show_bug.cgi?id=225298)); Can I use still says that. On newer iOS versions a Home Screen session sometimes starts anyway. It is not something to count on.
+Live text uses `webkitSpeechRecognition`. It works in iOS Safari when Dictation is enabled. WebKit has said the same API is not available in Home Screen web apps or Safari View Controller ([bug 225298](https://bugs.webkit.org/show_bug.cgi?id=225298)). On newer iOS versions a Home Screen session sometimes starts anyway. It is not something to count on.
 
 What this app does instead:
 
-- The icon is a standalone app, and every tap still records. That part works from the Home Screen.
-- Speech recognition starts in the same tap, before the microphone request is awaited. iOS forgets the tap if `start()` runs later, and returns `not-allowed`.
-- If recognition is missing, blocked, or ends immediately, recording continues and the screen says transcription isn’t available. From the Home Screen, **Open in Safari** leaves the installed app and opens the real browser, where dictation works. The link uses `target="_blank"`, which is what makes iOS switch out of standalone.
-- iOS ends recognition on a pause and about once a minute, even with `continuous` set. While the button is still recording, each ending starts a new recognizer. Final text is kept. A repeated last phrase is dropped.
-- Some iOS versions mute a `MediaRecorder` stream shortly after speech recognition takes the microphone (seen on iOS 27; earlier versions could do both). If the recording track stays muted while words are coming in, the take saves the transcript and says the audio couldn’t be kept. If transcription is the part that failed, the audio file is what gets saved.
-- Playing a saved clip can leave the next recognition hung ([bug 321436](https://bugs.webkit.org/show_bug.cgi?id=321436)). Each new tap pauses playback, builds a new recognizer, and opens the microphone again.
+- Speech recognition starts in the same tap, before any microphone request. iOS forgets the tap if `start()` runs later and returns `not-allowed`.
+- If recognition is missing or blocked, the take is still saved and the screen says so. From the Home Screen, **Open in Safari** leaves the installed app. The link uses `target="_blank"`, which is what makes iOS switch out of standalone.
+- iOS ends recognition on a pause and about once a minute. Each ending starts a new recognizer. A repeated last phrase is dropped. If a session goes quiet with no events, it is recycled.
+- If you turn audio on and the recognizer reports that the microphone is busy, audio is switched off and listening continues.
+- Playing a saved clip can leave the next recognition hung ([bug 321436](https://bugs.webkit.org/show_bug.cgi?id=321436)). Each new tap pauses playback and builds a new recognizer.
 
-Saved files stay in this browser. Apple’s speech service is what turns speech into text, and it needs a network connection.
+## Privacy on a public site
+
+The repository is public and GitHub Pages on the free plan cannot be private. There is no account and no secret in the repo. The PIN and the optional Face ID passkey never leave the phone; they only unwrap a key that stays in memory. See `docs/REVIEW.md` for what that does and does not protect, and for the steps to put the site behind a real login.

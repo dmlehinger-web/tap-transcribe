@@ -1,14 +1,14 @@
 {
   "name": "Tap Transcribe",
   "short_name": "Transcribe",
-  "description": "Tap once to record and transcribe. Tap again to stop.",
+  "description": "Tap once to transcribe. Notes stay locked on this phone.",
   "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#110e0b",
-  "theme_color": "#110e0b",
+  "background_color": "#0b0b0d",
+  "theme_color": "#0b0b0d",
   "icons": [
     {
       "src": "./icons/icon-192.png",

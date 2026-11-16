@@ -2,11 +2,14 @@
    URLs are relative to this file so the worker works at /tap-transcribe/. */
 'use strict';
 
-var CACHE = 'tap-transcribe-v1';
+var CACHE = 'tap-transcribe-v2';
 var ASSETS = [
   './index.html',
   './styles.css',
-  './app.js',
+  './js/app.js',
+  './js/text.js',
+  './js/speech.js',
+  './js/vault.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
